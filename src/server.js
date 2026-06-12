@@ -17,14 +17,47 @@ app.use(helmet());
 app.use(morgan('dev'));
 
 // CORS Configuration
-const allowedOrigins = [env.CLIENT_URL, 'http://localhost:5173', 'http://127.0.0.1:5173'];
+const allowedOrigins = [env.CLIENT_URL, 'http://localhost:5173', 'http://127.0.0.1:5173', 'https://frontend.oopsverse.cloud'];
+
+const getRootDomain = (urlStr) => {
+  try {
+    const hostname = new URL(urlStr).hostname;
+    const parts = hostname.split('.');
+    if (parts.length >= 2) {
+      return parts.slice(-2).join('.');
+    }
+    return hostname;
+  } catch (e) {
+    return '';
+  }
+};
+
+const clientRootDomain = getRootDomain(env.CLIENT_URL);
+
 app.use(cors({
   origin: function (origin, callback) {
     // allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
+    
+    // Check if origin is explicitly allowed or localhost
     if (allowedOrigins.indexOf(origin) !== -1 || origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
       return callback(null, true);
     }
+    
+    // Check if origin shares the root domain of the client URL
+    if (clientRootDomain) {
+      const originRootDomain = getRootDomain(origin);
+      if (originRootDomain === clientRootDomain) {
+        return callback(null, true);
+      }
+    }
+    
+    // Check if origin is oopsverse.cloud base domain
+    const originRootDomain = getRootDomain(origin);
+    if (originRootDomain === 'oopsverse.cloud') {
+      return callback(null, true);
+    }
+    
     return callback(new Error('The CORS policy for this site does not allow access from the specified Origin.'), false);
   },
   credentials: true

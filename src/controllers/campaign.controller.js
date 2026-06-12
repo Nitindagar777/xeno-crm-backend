@@ -12,6 +12,23 @@ const { updateCampaignStats } = require('../services/stats.service');
 const { generateWithFallback } = require('../services/geminiAgent.service');
 const { logActivity } = require('../services/activity.service');
 
+const getCallbackUrl = (clientUrl) => {
+  if (clientUrl.includes('localhost') || clientUrl.includes('127.0.0.1')) {
+    return 'http://localhost:5000/api/campaigns/receipt';
+  }
+  if (clientUrl.includes('frontend.')) {
+    return clientUrl.replace('frontend.', 'api.') + '/api/campaigns/receipt';
+  }
+  try {
+    const urlObj = new URL(clientUrl);
+    urlObj.hostname = `api.${urlObj.hostname}`;
+    return urlObj.origin + '/api/campaigns/receipt';
+  } catch (e) {
+    return 'http://localhost:5000/api/campaigns/receipt';
+  }
+};
+
+
 // @desc    Get all campaigns
 // @route   GET /api/campaigns
 // @access  Private
@@ -220,8 +237,7 @@ exports.sendCampaign = async (req, res, next) => {
               // Background send
               const batchSize = 50;
               const delayBetweenBatches = 100;
-              const callbackUrl = `${env.CLIENT_URL.replace('5173', '5000')}/api/campaigns/receipt`;
-              const actualCallbackUrl = callbackUrl.includes('localhost') ? 'http://localhost:5000/api/campaigns/receipt' : callbackUrl;
+              const actualCallbackUrl = getCallbackUrl(env.CLIENT_URL);
 
               for (let i = 0; i < custs.length; i += batchSize) {
                 const batch = custs.slice(i, i + batchSize);
@@ -321,8 +337,7 @@ exports.sendCampaign = async (req, res, next) => {
     (async () => {
       const batchSize = 50;
       const delayBetweenBatches = 100; // 100ms
-      const callbackUrl = `${env.CLIENT_URL.replace('5173', '5000')}/api/campaigns/receipt`; 
-      const actualCallbackUrl = callbackUrl.includes('localhost') ? 'http://localhost:5000/api/campaigns/receipt' : callbackUrl;
+      const actualCallbackUrl = getCallbackUrl(env.CLIENT_URL);
 
       for (let i = 0; i < customers.length; i += batchSize) {
         const batch = customers.slice(i, i + batchSize);
