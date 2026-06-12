@@ -16,7 +16,7 @@ const products = [
 const getRandomProduct = () => products[Math.floor(Math.random() * products.length)];
 const getRandomRange = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 
-const seedOrders = async (customers, userId) => {
+const seedOrders = async (customers, userId, workspaceId) => {
   console.log('Seeding orders collection...');
   await Order.deleteMany({});
   
@@ -87,6 +87,7 @@ const seedOrders = async (customers, userId) => {
  
       orders.push({
         userId,
+        workspaceId,
         customerId: customer._id,
         orderId: `ORD${getRandomRange(100000, 999999)}`,
         amount: orderAmount,

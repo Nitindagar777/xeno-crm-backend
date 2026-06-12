@@ -7,6 +7,12 @@ const CustomerSchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  workspaceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Workspace',
+    required: true,
+    index: true
+  },
   name: {
     type: String,
     required: [true, 'Customer name is required'],
@@ -58,7 +64,7 @@ const CustomerSchema = new mongoose.Schema({
   },
   source: {
     type: String,
-    enum: ['csv', 'manual', 'api'],
+    enum: ['csv', 'manual', 'api', 'excel', 'json'],
     default: 'manual'
   },
   customFields: {

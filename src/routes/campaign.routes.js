@@ -1,6 +1,7 @@
 const express = require('express');
 const campaignController = require('../controllers/campaign.controller');
 const authMiddleware = require('../middleware/auth.middleware');
+const workspaceMiddleware = require('../middleware/workspace.middleware');
 
 const router = express.Router();
 
@@ -9,6 +10,7 @@ router.post('/receipt', campaignController.receiveReceipt);
 
 // JWT Protect all other routes
 router.use(authMiddleware);
+router.use(workspaceMiddleware);
 
 router.get('/', campaignController.getCampaigns);
 router.post('/', campaignController.createCampaign);

@@ -10,6 +10,7 @@ const { success, error } = require('../utils/responseHelper');
 const { personalizeMessage } = require('../utils/messagePersonalizer');
 const { updateCampaignStats } = require('../services/stats.service');
 const { generateWithFallback } = require('../services/geminiAgent.service');
+const { logActivity } = require('../services/activity.service');
 
 // @desc    Get all campaigns
 // @route   GET /api/campaigns
@@ -17,7 +18,7 @@ const { generateWithFallback } = require('../services/geminiAgent.service');
 exports.getCampaigns = async (req, res, next) => {
   try {
     const statusFilter = req.query.status;
-    let query = req.user.role === 'admin' ? {} : { userId: req.user._id };
+    let query = { workspaceId: req.workspaceId };
     if (statusFilter) {
       query.status = statusFilter;
     }
@@ -28,8 +29,7 @@ exports.getCampaigns = async (req, res, next) => {
 
     // Attach statistics summary if available
     const campaignList = await Promise.all(campaigns.map(async (c) => {
-      const statsQuery = req.user.role === 'admin' ? { campaignId: c._id } : { campaignId: c._id, userId: req.user._id };
-      const stats = await CampaignStats.findOne(statsQuery);
+      const stats = await CampaignStats.findOne({ campaignId: c._id });
       return {
         ...c.toObject(),
         stats: stats || null
@@ -47,14 +47,13 @@ exports.getCampaigns = async (req, res, next) => {
 // @access  Private
 exports.getCampaign = async (req, res, next) => {
   try {
-    const query = req.user.role === 'admin' ? { _id: req.params.id } : { _id: req.params.id, userId: req.user._id };
+    const query = { _id: req.params.id, workspaceId: req.workspaceId };
     const campaign = await Campaign.findOne(query).populate('segmentId');
     if (!campaign) {
       return error(res, 'Campaign not found', 404);
     }
 
-    const statsQuery = req.user.role === 'admin' ? { campaignId: campaign._id } : { campaignId: campaign._id, userId: req.user._id };
-    const stats = await CampaignStats.findOne(statsQuery);
+    const stats = await CampaignStats.findOne({ campaignId: campaign._id });
 
     return success(res, { campaign, stats }, 'Campaign fetched successfully');
   } catch (err) {
@@ -73,15 +72,15 @@ exports.createCampaign = async (req, res, next) => {
       return error(res, 'Please provide all required fields: name, segmentId, messageTemplate, channel', 400);
     }
 
-    // Verify segment exists and belongs to the user (bypass scoping if admin)
-    const segmentQuery = req.user.role === 'admin' ? { _id: segmentId } : { _id: segmentId, userId: req.user._id };
-    const segment = await Segment.findOne(segmentQuery);
+    // Verify segment exists and belongs to active workspace
+    const segment = await Segment.findOne({ _id: segmentId, workspaceId: req.workspaceId });
     if (!segment) {
       return error(res, 'Segment not found', 404);
     }
 
     const campaign = new Campaign({
       userId: req.user._id,
+      workspaceId: req.workspaceId,
       name,
       segmentId,
       messageTemplate,
@@ -92,6 +91,18 @@ exports.createCampaign = async (req, res, next) => {
     });
 
     await campaign.save();
+
+    logActivity({
+      userId: req.user._id,
+      workspaceId: req.workspaceId,
+      type: 'campaign_created',
+      title: `Created campaign: ${campaign.name}`,
+      description: `Channel: ${campaign.channel}`,
+      resourceType: 'campaign',
+      resourceId: campaign._id,
+      meta: { channel: campaign.channel }
+    });
+
     return success(res, campaign, 'Campaign draft created successfully', 201);
   } catch (err) {
     next(err);
@@ -105,7 +116,7 @@ exports.updateCampaign = async (req, res, next) => {
   try {
     const { name, segmentId, messageTemplate, channel } = req.body;
 
-    const query = req.user.role === 'admin' ? { _id: req.params.id } : { _id: req.params.id, userId: req.user._id };
+    const query = { _id: req.params.id, workspaceId: req.workspaceId };
     let campaign = await Campaign.findOne(query);
     if (!campaign) {
       return error(res, 'Campaign not found', 404);
@@ -120,8 +131,7 @@ exports.updateCampaign = async (req, res, next) => {
     if (channel) campaign.channel = channel;
     
     if (segmentId) {
-      const segmentQuery = req.user.role === 'admin' ? { _id: segmentId } : { _id: segmentId, userId: req.user._id };
-      const segment = await Segment.findOne(segmentQuery);
+      const segment = await Segment.findOne({ _id: segmentId, workspaceId: req.workspaceId });
       if (!segment) {
         return error(res, 'Segment not found', 404);
       }
@@ -140,7 +150,7 @@ exports.updateCampaign = async (req, res, next) => {
 // @access  Private
 exports.deleteCampaign = async (req, res, next) => {
   try {
-    const query = req.user.role === 'admin' ? { _id: req.params.id } : { _id: req.params.id, userId: req.user._id };
+    const query = { _id: req.params.id, workspaceId: req.workspaceId };
     const campaign = await Campaign.findOne(query);
     if (!campaign) {
       return error(res, 'Campaign not found', 404);
@@ -150,11 +160,8 @@ exports.deleteCampaign = async (req, res, next) => {
       return error(res, 'Only draft campaigns can be deleted', 400);
     }
 
-    const statsQuery = req.user.role === 'admin' ? { campaignId: campaign._id } : { campaignId: campaign._id, userId: req.user._id };
-    await CampaignStats.deleteOne(statsQuery);
-
-    const logQuery = req.user.role === 'admin' ? { campaignId: campaign._id } : { campaignId: campaign._id, userId: req.user._id };
-    await CommunicationLog.deleteMany(logQuery);
+    await CampaignStats.deleteOne({ campaignId: campaign._id });
+    await CommunicationLog.deleteMany({ campaignId: campaign._id });
     
     await campaign.deleteOne();
 
@@ -169,7 +176,7 @@ exports.deleteCampaign = async (req, res, next) => {
 // @access  Private
 exports.sendCampaign = async (req, res, next) => {
   try {
-    const query = req.user.role === 'admin' ? { _id: req.params.id } : { _id: req.params.id, userId: req.user._id };
+    const query = { _id: req.params.id, workspaceId: req.workspaceId };
     const campaign = await Campaign.findOne(query);
     if (!campaign) {
       return error(res, 'Campaign not found', 404);
@@ -187,22 +194,17 @@ exports.sendCampaign = async (req, res, next) => {
         campaign.status = 'scheduled';
         await campaign.save();
 
-        // Schedule the send for the future time
         const delay = scheduledTime.getTime() - Date.now();
         setTimeout(async () => {
           try {
-            // Re-fetch the campaign to check if it's still scheduled
             const freshCampaign = await Campaign.findById(campaign._id);
             if (freshCampaign && freshCampaign.status === 'scheduled') {
-              // Trigger the send by making an internal request-like call
-              // We simulate the send by directly executing the send logic
-              const segQuery = { _id: freshCampaign.segmentId };
-              const seg = await Segment.findOne(segQuery);
+              const seg = await Segment.findOne({ _id: freshCampaign.segmentId, workspaceId: freshCampaign.workspaceId });
               if (!seg || seg.audienceIds.length === 0) {
                 console.error('[Scheduled Campaign] Segment empty or not found for campaign', freshCampaign._id);
                 return;
               }
-              const custs = await Customer.find({ _id: { $in: seg.audienceIds } });
+              const custs = await Customer.find({ _id: { $in: seg.audienceIds }, workspaceId: freshCampaign.workspaceId });
               freshCampaign.status = 'running';
               freshCampaign.startedAt = new Date();
               await freshCampaign.save();
@@ -215,7 +217,7 @@ exports.sendCampaign = async (req, res, next) => {
               });
               await initialStats.save();
 
-              // Background send (same batching logic)
+              // Background send
               const batchSize = 50;
               const delayBetweenBatches = 100;
               const callbackUrl = `${env.CLIENT_URL.replace('5173', '5000')}/api/campaigns/receipt`;
@@ -227,6 +229,7 @@ exports.sendCampaign = async (req, res, next) => {
                   const personalizedMessage = personalizeMessage(freshCampaign.messageTemplate, customer);
                   const log = new CommunicationLog({
                     userId: freshCampaign.userId,
+                    workspaceId: freshCampaign.workspaceId,
                     campaignId: freshCampaign._id,
                     customerId: customer._id,
                     personalizedMessage,
@@ -238,7 +241,9 @@ exports.sendCampaign = async (req, res, next) => {
                   try {
                     const sendResponse = await axios.post(`${env.CHANNEL_SERVICE_URL}/api/channel/send`, {
                       campaignId: freshCampaign._id.toString(),
+                      campaignName: freshCampaign.name,
                       customerId: customer._id.toString(),
+                      userId: freshCampaign.userId.toString(),
                       message: personalizedMessage,
                       channel: freshCampaign.channel,
                       recipientPhone: customer.phone,
@@ -276,23 +281,20 @@ exports.sendCampaign = async (req, res, next) => {
       }
     }
 
-    // Load segment and populated audience scoped to user/role
-    const segmentQuery = req.user.role === 'admin' ? { _id: campaign.segmentId } : { _id: campaign.segmentId, userId: req.user._id };
-    const segment = await Segment.findOne(segmentQuery);
+    // Load segment and populated audience scoped to active workspace
+    const segment = await Segment.findOne({ _id: campaign.segmentId, workspaceId: req.workspaceId });
     if (!segment || segment.audienceIds.length === 0) {
       return error(res, 'Segment does not exist or has 0 customers', 400);
     }
 
-    // Load all customers in the segment scoped to user/role
-    const customerQuery = req.user.role === 'admin' ? { _id: { $in: segment.audienceIds } } : { _id: { $in: segment.audienceIds }, userId: req.user._id };
-    const customers = await Customer.find(customerQuery);
+    const customers = await Customer.find({ _id: { $in: segment.audienceIds }, workspaceId: req.workspaceId });
 
     // Update campaign status to running
     campaign.status = 'running';
     campaign.startedAt = new Date();
     await campaign.save();
 
-    // Initialize CampaignStats scoped to user
+    // Initialize CampaignStats
     const initialStats = new CampaignStats({
       userId: req.user._id,
       campaignId: campaign._id,
@@ -300,6 +302,17 @@ exports.sendCampaign = async (req, res, next) => {
       queued: customers.length
     });
     await initialStats.save();
+
+    logActivity({
+      userId: req.user._id,
+      workspaceId: req.workspaceId,
+      type: 'campaign_sent',
+      title: `Sent campaign: ${campaign.name}`,
+      description: `Targeted ${customers.length} customers via ${campaign.channel}`,
+      resourceType: 'campaign',
+      resourceId: campaign._id,
+      meta: { channel: campaign.channel, audienceCount: customers.length }
+    });
 
     // Respond immediately to prevent HTTP timeouts
     success(res, { totalQueued: customers.length }, 'Campaign execution initiated', 200);
@@ -309,7 +322,6 @@ exports.sendCampaign = async (req, res, next) => {
       const batchSize = 50;
       const delayBetweenBatches = 100; // 100ms
       const callbackUrl = `${env.CLIENT_URL.replace('5173', '5000')}/api/campaigns/receipt`; 
-      // Hardcoded fallback for localhost to guarantee it finds it
       const actualCallbackUrl = callbackUrl.includes('localhost') ? 'http://localhost:5000/api/campaigns/receipt' : callbackUrl;
 
       for (let i = 0; i < customers.length; i += batchSize) {
@@ -318,9 +330,9 @@ exports.sendCampaign = async (req, res, next) => {
         const promises = batch.map(async (customer) => {
           const personalizedMessage = personalizeMessage(campaign.messageTemplate, customer);
           
-          // Create CommunicationLog scoped to user
           const log = new CommunicationLog({
             userId: req.user._id,
+            workspaceId: req.workspaceId,
             campaignId: campaign._id,
             customerId: customer._id,
             personalizedMessage,
@@ -331,10 +343,11 @@ exports.sendCampaign = async (req, res, next) => {
           await log.save();
 
           try {
-            // Send request to channel-service
             const sendResponse = await axios.post(`${env.CHANNEL_SERVICE_URL}/api/channel/send`, {
               campaignId: campaign._id.toString(),
+              campaignName: campaign.name,
               customerId: customer._id.toString(),
+              userId: req.user._id.toString(),
               message: personalizedMessage,
               channel: campaign.channel,
               recipientPhone: customer.phone,
@@ -368,10 +381,7 @@ exports.sendCampaign = async (req, res, next) => {
           }
         });
 
-        // Resolve batch
         await Promise.allSettled(promises);
-        
-        // Update stats after batch
         await updateCampaignStats(campaign._id);
 
         if (i + batchSize < customers.length) {
@@ -396,7 +406,7 @@ exports.receiveReceipt = async (req, res, next) => {
     return res.status(401).json({ success: false, error: 'Unauthorized webhook call' });
   }
 
-  const { vendorMessageId, campaignId, customerId, status, timestamp, meta } = req.body;
+  const { vendorMessageId, status, timestamp, meta } = req.body;
 
   if (!vendorMessageId || !status) {
     return res.status(400).json({ success: false, error: 'Missing vendorMessageId or status' });
@@ -408,12 +418,11 @@ exports.receiveReceipt = async (req, res, next) => {
       return res.status(404).json({ success: false, error: 'Communication log not found' });
     }
 
-    // Status precedence order to prevent out-of-order callback regressions
     const statusOrder = {
       'queued': 1,
       'sent': 2,
       'delivered': 3,
-      'failed': 3, // terminal status
+      'failed': 3,
       'opened': 4,
       'read': 5,
       'clicked': 6
@@ -422,7 +431,6 @@ exports.receiveReceipt = async (req, res, next) => {
     const currentPrecedence = statusOrder[log.status] || 0;
     const newPrecedence = statusOrder[status] || 0;
 
-    // Only update if the new status represents progress in lifecycle
     if (newPrecedence > currentPrecedence || status === 'failed') {
       log.status = status;
       log.statusHistory.push({
@@ -436,8 +444,6 @@ exports.receiveReceipt = async (req, res, next) => {
       }
       
       await log.save();
-
-      // Recalculate stats
       await updateCampaignStats(log.campaignId);
     }
 
@@ -457,14 +463,13 @@ exports.getCampaignLogs = async (req, res, next) => {
     const skip = (page - 1) * limit;
     const statusFilter = req.query.status;
 
-    // Verify campaign belongs to the user (bypass scoping if admin)
-    const query = req.user.role === 'admin' ? { _id: req.params.id } : { _id: req.params.id, userId: req.user._id };
+    const query = { _id: req.params.id, workspaceId: req.workspaceId };
     const campaign = await Campaign.findOne(query);
     if (!campaign) {
       return error(res, 'Campaign not found', 404);
     }
 
-    let logQuery = req.user.role === 'admin' ? { campaignId: new mongoose.Types.ObjectId(req.params.id) } : { campaignId: new mongoose.Types.ObjectId(req.params.id), userId: req.user._id };
+    let logQuery = { campaignId: new mongoose.Types.ObjectId(req.params.id), workspaceId: req.workspaceId };
     if (statusFilter) {
       logQuery.status = statusFilter;
     }
@@ -493,18 +498,15 @@ exports.getCampaignLogs = async (req, res, next) => {
 // @access  Private
 exports.getCampaignStats = async (req, res, next) => {
   try {
-    // Verify campaign belongs to the user (bypass scoping if admin)
-    const query = req.user.role === 'admin' ? { _id: req.params.id } : { _id: req.params.id, userId: req.user._id };
+    const query = { _id: req.params.id, workspaceId: req.workspaceId };
     const campaign = await Campaign.findOne(query);
     if (!campaign) {
       return error(res, 'Campaign not found', 404);
     }
 
-    const statsQuery = req.user.role === 'admin' ? { campaignId: req.params.id } : { campaignId: req.params.id, userId: req.user._id };
-    let stats = await CampaignStats.findOne(statsQuery);
+    let stats = await CampaignStats.findOne({ campaignId: req.params.id });
     
     if (!stats) {
-      // Lazy initialize stats if none exists yet
       stats = await updateCampaignStats(req.params.id);
     }
 
@@ -519,26 +521,21 @@ exports.getCampaignStats = async (req, res, next) => {
 // @access  Private
 exports.getCampaignAnalysis = async (req, res, next) => {
   try {
-    const query = req.user.role === 'admin' ? { _id: req.params.id } : { _id: req.params.id, userId: req.user._id };
+    const query = { _id: req.params.id, workspaceId: req.workspaceId };
     const campaign = await Campaign.findOne(query);
     if (!campaign) {
       return error(res, 'Campaign not found', 404);
     }
 
-    // Return cached analysis if available
     if (campaign.aiAnalysis) {
       return success(res, { analysis: campaign.aiAnalysis, cached: true }, 'Campaign analysis fetched successfully');
     }
 
-    // Only allow analysis for completed campaigns
     if (campaign.status !== 'completed') {
       return error(res, 'AI analysis is only available for completed campaigns', 400);
     }
 
-    // Fetch campaign stats
-    const statsQuery = req.user.role === 'admin' ? { campaignId: campaign._id } : { campaignId: campaign._id, userId: req.user._id };
-    const stats = await CampaignStats.findOne(statsQuery);
-
+    const stats = await CampaignStats.findOne({ campaignId: campaign._id });
     if (!stats) {
       return error(res, 'Campaign statistics not found. Cannot generate analysis.', 404);
     }
@@ -556,7 +553,6 @@ Provide specific recommendations for improvement.`;
       analysisText = result.response.text();
     } catch (aiErr) {
       console.error('[Campaign Analysis] Gemini API error:', aiErr.message);
-      // Fallback analysis based on stats
       const issues = [];
       if (stats.deliveryRate < 90) issues.push(`Delivery rate is low at ${stats.deliveryRate}%. Consider cleaning your contact list and verifying ${campaign.channel} addresses.`);
       if (stats.openRate < 20) issues.push(`Open rate of ${stats.openRate}% is below average. Try more compelling subject lines or sending at optimal times.`);
@@ -566,7 +562,6 @@ Provide specific recommendations for improvement.`;
       analysisText = issues.join(' ');
     }
 
-    // Cache the analysis
     campaign.aiAnalysis = analysisText;
     await campaign.save();
 

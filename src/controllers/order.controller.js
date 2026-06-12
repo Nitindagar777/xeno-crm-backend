@@ -6,12 +6,11 @@ const { success, error } = require('../utils/responseHelper');
 const { clearUserCache } = require('./agent.controller');
 
 // Helper to recalculate customer metrics
-const updateCustomerStats = async (customerId, userId, role) => {
-  const customerQuery = role === 'admin' ? { _id: customerId } : { _id: customerId, userId };
-  const customer = await Customer.findOne(customerQuery);
+const updateCustomerStats = async (customerId, workspaceId) => {
+  const customer = await Customer.findOne({ _id: customerId, workspaceId });
   if (!customer) return;
 
-  const orderQuery = role === 'admin' ? { customerId, status: 'completed' } : { customerId, userId, status: 'completed' };
+  const orderQuery = { customerId, workspaceId, status: 'completed' };
   const completedOrders = await Order.find(orderQuery).sort({ orderedAt: 1 });
 
   if (completedOrders.length === 0) {
@@ -40,7 +39,7 @@ exports.getOrders = async (req, res, next) => {
     const limit = parseInt(req.query.limit, 10) || 20;
     const skip = (page - 1) * limit;
 
-    let query = req.user.role === 'admin' ? {} : { userId: req.user._id };
+    let query = { workspaceId: req.workspaceId };
     if (req.query.status) {
       query.status = req.query.status;
     }
@@ -68,7 +67,7 @@ exports.getOrders = async (req, res, next) => {
 // @access  Private
 exports.getOrder = async (req, res, next) => {
   try {
-    const query = req.user.role === 'admin' ? { _id: req.params.id } : { _id: req.params.id, userId: req.user._id };
+    const query = { _id: req.params.id, workspaceId: req.workspaceId };
     const order = await Order.findOne(query).populate('customerId', 'name email phone city');
     if (!order) {
       return error(res, 'Order not found', 404);
@@ -90,15 +89,15 @@ exports.createOrder = async (req, res, next) => {
       return error(res, 'Customer ID and Order Amount are required', 400);
     }
 
-    // Verify customer exists and belongs to active user
-    const customerQuery = req.user.role === 'admin' ? { _id: customerId } : { _id: customerId, userId: req.user._id };
-    const customer = await Customer.findOne(customerQuery);
+    // Verify customer exists and belongs to active workspace
+    const customer = await Customer.findOne({ _id: customerId, workspaceId: req.workspaceId });
     if (!customer) {
       return error(res, 'Customer not found', 404);
     }
 
     const order = new Order({
       userId: req.user._id,
+      workspaceId: req.workspaceId,
       customerId,
       orderId,
       amount,
@@ -111,7 +110,7 @@ exports.createOrder = async (req, res, next) => {
     await order.save();
 
     // Recalculate stats for the customer
-    await updateCustomerStats(customerId, req.user._id, req.user.role);
+    await updateCustomerStats(customerId, req.workspaceId);
     clearUserCache(req.user._id);
 
     // Conversion attribution: mark recent campaign communications as converted
@@ -119,6 +118,7 @@ exports.createOrder = async (req, res, next) => {
       const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
       const recentLogs = await CommunicationLog.find({
         customerId,
+        workspaceId: req.workspaceId,
         status: { $in: ['delivered', 'opened', 'read', 'clicked'] },
         createdAt: { $gte: sevenDaysAgo },
         converted: false
@@ -163,14 +163,13 @@ exports.createOrder = async (req, res, next) => {
 // @access  Private
 exports.getCustomerOrders = async (req, res, next) => {
   try {
-    // Check if the customer belongs to the user first
-    const customerQuery = req.user.role === 'admin' ? { _id: req.params.customerId } : { _id: req.params.customerId, userId: req.user._id };
-    const customer = await Customer.findOne(customerQuery);
+    // Check if the customer belongs to the active workspace first
+    const customer = await Customer.findOne({ _id: req.params.customerId, workspaceId: req.workspaceId });
     if (!customer) {
       return error(res, 'Customer not found', 404);
     }
 
-    const orderQuery = req.user.role === 'admin' ? { customerId: req.params.customerId } : { customerId: req.params.customerId, userId: req.user._id };
+    const orderQuery = { customerId: req.params.customerId, workspaceId: req.workspaceId };
     const orders = await Order.find(orderQuery).sort({ orderedAt: -1 });
     return success(res, orders, 'Customer orders fetched successfully');
   } catch (err) {

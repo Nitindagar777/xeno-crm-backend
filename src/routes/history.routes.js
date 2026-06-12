@@ -1,16 +1,14 @@
 const express = require('express');
-const agentController = require('../controllers/agent.controller');
+const { getMessageHistory } = require('../controllers/history.controller');
 const authMiddleware = require('../middleware/auth.middleware');
 const workspaceMiddleware = require('../middleware/workspace.middleware');
 
 const router = express.Router();
 
+// Protect all history routes
 router.use(authMiddleware);
 router.use(workspaceMiddleware);
 
-router.post('/message', agentController.sendMessage);
-router.post('/approve', agentController.approveStep);
-router.get('/suggestions', agentController.getSuggestions);
-router.get('/insights', agentController.getInsights);
+router.get('/messages', getMessageHistory);
 
 module.exports = router;

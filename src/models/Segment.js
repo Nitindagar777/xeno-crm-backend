@@ -7,6 +7,12 @@ const SegmentSchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  workspaceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Workspace',
+    required: true,
+    index: true
+  },
   name: {
     type: String,
     required: [true, 'Segment name is required'],
@@ -36,6 +42,9 @@ const SegmentSchema = new mongoose.Schema({
       type: String,
       enum: ['AND', 'OR'],
       default: 'AND'
+    },
+    limit: {
+      type: Number
     }
   },
   audienceIds: [{

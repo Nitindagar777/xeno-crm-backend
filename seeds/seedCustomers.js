@@ -45,7 +45,7 @@ const getRandomDate = (startDaysAgo, endDaysAgo) => {
   return date;
 };
 
-const generateCustomers = (userId) => {
+const generateCustomers = (userId, workspaceId) => {
   const customers = [];
 
   const addCustomer = (type, minSpend, maxSpend, minOrders, maxOrders, minDaysAgo, maxDaysAgo, tagList, createdAtDaysAgo = null) => {
@@ -91,6 +91,7 @@ const generateCustomers = (userId) => {
 
     customers.push({
       userId,
+      workspaceId,
       name,
       email,
       phone,
@@ -141,10 +142,10 @@ const generateCustomers = (userId) => {
   return customers;
 };
 
-const seedCustomers = async (userId) => {
+const seedCustomers = async (userId, workspaceId) => {
   console.log('Seeding customers collection...');
   await Customer.deleteMany({});
-  const customers = generateCustomers(userId);
+  const customers = generateCustomers(userId, workspaceId);
   const seeded = await Customer.insertMany(customers);
   console.log(`Seeded ${seeded.length} customers successfully.`);
   return seeded;

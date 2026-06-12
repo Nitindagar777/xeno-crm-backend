@@ -1,10 +1,12 @@
 const express = require('express');
 const segmentController = require('../controllers/segment.controller');
 const authMiddleware = require('../middleware/auth.middleware');
+const workspaceMiddleware = require('../middleware/workspace.middleware');
 
 const router = express.Router();
 
 router.use(authMiddleware);
+router.use(workspaceMiddleware);
 
 router.get('/', segmentController.getSegments);
 router.post('/', segmentController.createSegment);

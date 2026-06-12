@@ -7,6 +7,12 @@ const CommunicationLogSchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  workspaceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Workspace',
+    required: true,
+    index: true
+  },
   campaignId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Campaign',

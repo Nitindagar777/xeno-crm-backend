@@ -51,6 +51,8 @@ app.use('/api/segments', require('./routes/segment.routes'));
 app.use('/api/campaigns', require('./routes/campaign.routes'));
 app.use('/api/agent', require('./routes/agent.routes'));
 app.use('/api/stats', require('./routes/stats.routes'));
+app.use('/api/workspace', require('./routes/workspace.routes'));
+app.use('/api/history', require('./routes/history.routes'));
 
 // Health check endpoint
 app.get('/health', (req, res) => {

@@ -1,31 +1,73 @@
 const Customer = require('../models/Customer');
 
 /**
+ * Normalizes input field names into standard database schema keys
+ */
+const normalizeSegmentField = (field) => {
+  if (!field) return '';
+  const f = field.toLowerCase().trim();
+  
+  if (['ordercount', 'orders', 'order count', 'total orders', 'totalorders', 'order_count'].includes(f)) {
+    return 'orderCount';
+  }
+  if (['totalspend', 'total spend', 'spend', 'amount', 'total_spend', 'price', 'revenue', 'spend amount', 'total spend (₹)', 'total spend (rs)'].includes(f)) {
+    return 'totalSpend';
+  }
+  if (['avgordervalue', 'avg order value', 'average order value', 'averageordervalue', 'aov'].includes(f)) {
+    return 'avgOrderValue';
+  }
+  if (['dayssincelastorder', 'days since last order', 'days since last', 'dayssincelast', 'dayssincelastpurchase', 'days since purchase'].includes(f)) {
+    return 'daysSinceLastOrder';
+  }
+  if (['dayssinceregistration', 'days since registration', 'days since signup', 'days since join', 'dayssinceregn', 'dayssinceregt'].includes(f)) {
+    return 'daysSinceRegistration';
+  }
+  if (['city', 'location', 'town', 'address'].includes(f)) {
+    return 'city';
+  }
+  if (['gender', 'sex'].includes(f)) {
+    return 'gender';
+  }
+  if (['tags', 'tag'].includes(f)) {
+    return 'tags';
+  }
+  if (['name', 'fullname', 'full name', 'customer name'].includes(f)) {
+    return 'name';
+  }
+  if (['email', 'email address', 'mail'].includes(f)) {
+    return 'email';
+  }
+  if (['phone', 'phone number', 'phonenumber', 'mobile', 'mobile number'].includes(f)) {
+    return 'phone';
+  }
+  if (['createdat', 'created at', 'registration date', 'registrationdate'].includes(f)) {
+    return 'createdAt';
+  }
+  
+  return field; // return raw if custom column
+};
+
+/**
  * Converts a segment rule condition to a MongoDB query selector
  * @param {Object} condition Rule condition { field, operator, value }
  * @returns {Object} MongoDB query selector
  */
 const buildConditionQuery = (condition) => {
   const { field, operator, value } = condition;
+  const normalizedField = normalizeSegmentField(field);
   const query = {};
 
   // Special handling for daysSinceLastOrder or lastOrderDate converted to days ago
-  if (field === 'daysSinceLastOrder' || field === 'lastOrderDate') {
-    // If the rule specifies daysSinceLastOrder, it means "X days ago"
-    // e.g. daysSinceLastOrder >= 30 means lastOrderDate <= (today - 30 days)
+  if (normalizedField === 'daysSinceLastOrder' || normalizedField === 'lastOrderDate') {
     const days = parseInt(value, 10);
     const dateLimit = new Date();
     dateLimit.setDate(dateLimit.getDate() - days);
 
-    // Set time to start/end of day for accuracy
     if (operator === 'gte' || operator === 'gt') {
-      // More than X days ago means they ordered BEFORE or ON the dateLimit
       return { lastOrderDate: { [operator === 'gte' ? '$lte' : '$lt']: dateLimit } };
     } else if (operator === 'lte' || operator === 'lt') {
-      // Less than X days ago means they ordered AFTER or ON the dateLimit
       return { lastOrderDate: { [operator === 'lte' ? '$gte' : '$gt']: dateLimit } };
     } else if (operator === 'eq') {
-      // Equal to X days ago (roughly on that day)
       const startOfDay = new Date(dateLimit.setHours(0, 0, 0, 0));
       const endOfDay = new Date(dateLimit.setHours(23, 59, 59, 999));
       return { lastOrderDate: { $gte: startOfDay, $lte: endOfDay } };
@@ -36,8 +78,58 @@ const buildConditionQuery = (condition) => {
     }
   }
 
+  // Special handling for daysSinceRegistration or registration date
+  if (normalizedField === 'daysSinceRegistration') {
+    const days = parseInt(value, 10);
+    const dateLimit = new Date();
+    dateLimit.setDate(dateLimit.getDate() - days);
+
+    if (operator === 'gte' || operator === 'gt') {
+      return { createdAt: { [operator === 'gte' ? '$lte' : '$lt']: dateLimit } };
+    } else if (operator === 'lte' || operator === 'lt') {
+      return { createdAt: { [operator === 'lte' ? '$gte' : '$gt']: dateLimit } };
+    } else if (operator === 'eq') {
+      const startOfDay = new Date(dateLimit.setHours(0, 0, 0, 0));
+      const endOfDay = new Date(dateLimit.setHours(23, 59, 59, 999));
+      return { createdAt: { $gte: startOfDay, $lte: endOfDay } };
+    } else if (operator === 'neq') {
+      const startOfDay = new Date(dateLimit.setHours(0, 0, 0, 0));
+      const endOfDay = new Date(dateLimit.setHours(23, 59, 59, 999));
+      return { $or: [{ createdAt: { $lt: startOfDay } }, { createdAt: { $gt: endOfDay } }] };
+    }
+  }
+
+  if (normalizedField === 'createdAt') {
+    let dateVal;
+    if (!isNaN(value)) {
+      const days = parseInt(value, 10);
+      dateVal = new Date();
+      dateVal.setDate(dateVal.getDate() - days);
+    } else {
+      dateVal = new Date(value);
+    }
+    
+    if (operator === 'gte' || operator === 'gt') {
+      return { createdAt: { [operator === 'gte' ? '$gte' : '$gt']: dateVal } };
+    } else if (operator === 'lte' || operator === 'lt') {
+      return { createdAt: { [operator === 'lte' ? '$lte' : '$lt']: dateVal } };
+    } else if (operator === 'eq') {
+      const startOfDay = new Date(dateVal.setHours(0, 0, 0, 0));
+      const endOfDay = new Date(dateVal.setHours(23, 59, 59, 999));
+      return { createdAt: { $gte: startOfDay, $lte: endOfDay } };
+    } else if (operator === 'neq') {
+      const startOfDay = new Date(dateVal.setHours(0, 0, 0, 0));
+      const endOfDay = new Date(dateVal.setHours(23, 59, 59, 999));
+      return { $or: [{ createdAt: { $lt: startOfDay } }, { createdAt: { $gt: endOfDay } }] };
+    }
+  }
+
   // General field mapping
-  let dbField = field;
+  let dbField = normalizedField;
+  const standardFields = ['totalSpend', 'orderCount', 'avgOrderValue', 'daysSinceLastOrder', 'lastOrderDate', 'daysSinceRegistration', 'createdAt', 'city', 'gender', 'tags', 'name', 'email', 'phone'];
+  if (!standardFields.includes(normalizedField)) {
+    dbField = `customFields.${field}`;
+  }
 
   // Map operator to MongoDB operators
   switch (operator) {
@@ -54,10 +146,18 @@ const buildConditionQuery = (condition) => {
       query[dbField] = { $lte: value };
       break;
     case 'eq':
-      query[dbField] = value;
+      if (typeof value === 'string') {
+        query[dbField] = new RegExp(`^${value}$`, 'i');
+      } else {
+        query[dbField] = value;
+      }
       break;
     case 'neq':
-      query[dbField] = { $ne: value };
+      if (typeof value === 'string') {
+        query[dbField] = { $not: new RegExp(`^${value}$`, 'i') };
+      } else {
+        query[dbField] = { $ne: value };
+      }
       break;
     case 'in':
       // Ensure value is an array, handle single value wrapped
@@ -98,7 +198,7 @@ const buildConditionQuery = (condition) => {
  * @param {string|mongoose.Types.ObjectId} userId User ID for scoping
  * @returns {Promise<Object>} { audienceIds, audienceCount }
  */
-const resolveSegment = async (rules, userId) => {
+const resolveSegment = async (rules, workspaceId) => {
   if (!rules || !rules.conditions || rules.conditions.length === 0) {
     return { audienceIds: [], audienceCount: 0 };
   }
@@ -107,12 +207,12 @@ const resolveSegment = async (rules, userId) => {
   const conditionQueries = conditions.map(buildConditionQuery);
 
   let finalQuery = {};
-  if (userId) {
+  if (workspaceId) {
     if (logic === 'OR') {
-      finalQuery = { userId, $or: conditionQueries };
+      finalQuery = { workspaceId, $or: conditionQueries };
     } else {
       // Default to AND
-      finalQuery = { userId, $and: conditionQueries };
+      finalQuery = { workspaceId, $and: conditionQueries };
     }
   } else {
     if (logic === 'OR') {
@@ -123,7 +223,11 @@ const resolveSegment = async (rules, userId) => {
   }
 
   try {
-    const customers = await Customer.find(finalQuery).select('_id');
+    let queryBuilder = Customer.find(finalQuery).select('_id');
+    if (rules && rules.limit && typeof rules.limit === 'number' && rules.limit > 0) {
+      queryBuilder = queryBuilder.limit(rules.limit);
+    }
+    const customers = await queryBuilder;
     const audienceIds = customers.map(c => c._id);
     return {
       audienceIds,

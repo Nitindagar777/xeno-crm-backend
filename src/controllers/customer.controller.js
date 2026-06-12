@@ -3,6 +3,21 @@ const Order = require('../models/Order');
 const { success, error } = require('../utils/responseHelper');
 const { parseCustomersCSV } = require('../services/csvImport.service');
 const { clearUserCache } = require('./agent.controller');
+const { logActivity } = require('../services/activity.service');
+
+const normalizeHeader = (header) => {
+  const h = header.toLowerCase().trim();
+  if (h === 'name') return 'name';
+  if (h === 'email') return 'email';
+  if (h === 'phone') return 'phone';
+  if (h === 'city') return 'city';
+  if (h === 'gender') return 'gender';
+  if (h === 'tags') return 'tags';
+  if (['total spend', 'totalspend', 'spend'].includes(h)) return 'totalSpend';
+  if (['orders', 'ordercount', 'order count'].includes(h)) return 'orderCount';
+  if (['last active', 'lastactive', 'last order date', 'lastorderdate'].includes(h)) return 'lastOrderDate';
+  return header.trim(); // keep case for custom columns
+};
 
 // @desc    Get all customers with pagination, search, filters & sorting
 // @route   GET /api/customers
@@ -13,8 +28,8 @@ exports.getCustomers = async (req, res, next) => {
     const limit = parseInt(req.query.limit, 10) || 20;
     const skip = (page - 1) * limit;
 
-    // Search query (name, email, phone) scoped to user/role
-    let query = req.user.role === 'admin' ? {} : { userId: req.user._id };
+    // Search query (name, email, phone) scoped to active workspace
+    let query = { workspaceId: req.workspaceId };
     if (req.query.search) {
       const searchRegex = new RegExp(req.query.search, 'i');
       query.$or = [
@@ -26,7 +41,6 @@ exports.getCustomers = async (req, res, next) => {
 
     // Filters
     if (req.query.city) {
-      // support comma separated list or single string
       const cities = req.query.city.split(',').map(c => c.trim());
       query.city = { $in: cities.map(c => new RegExp(`^${c}$`, 'i')) };
     }
@@ -50,16 +64,36 @@ exports.getCustomers = async (req, res, next) => {
     }
 
     if (req.query.minOrders !== undefined && req.query.minOrders !== '') {
-      query.orderCount = { ...query.orderCount, $gte: parseInt(req.query.minOrders) };
+      query.orderCount = { ...query.orderCount, $gte: parseInt(req.query.minOrders, 10) };
     }
 
     if (req.query.daysSinceLast !== undefined && req.query.daysSinceLast !== '') {
-      const days = parseInt(req.query.daysSinceLast);
+      const days = parseInt(req.query.daysSinceLast, 10);
       const cutOffDate = new Date();
       cutOffDate.setDate(cutOffDate.getDate() - days);
-      // daysSinceLastOrder >= days means lastOrderDate <= cutOffDate
       query.lastOrderDate = { $lte: cutOffDate };
     }
+
+    // Fetch workspace uploaded fields to dynamically map query params
+    const Workspace = require('../models/Workspace');
+    const workspace = await Workspace.findById(req.workspaceId);
+    const uploadedFields = workspace?.uploadedFields || [];
+    const standardSchemaFields = ['name', 'email', 'phone', 'city', 'gender', 'tags', 'totalSpend', 'orderCount', 'lastOrderDate', 'avgOrderValue'];
+    const customFieldKeys = uploadedFields.filter(f => !standardSchemaFields.includes(f));
+
+    customFieldKeys.forEach(key => {
+      if (req.query[key] !== undefined && req.query[key] !== '') {
+        const val = req.query[key];
+        if (!isNaN(val) && val.trim() !== '') {
+          const numVal = parseFloat(val);
+          query[`customFields.${key}`] = {
+            $in: [numVal, new RegExp(val, 'i')]
+          };
+        } else {
+          query[`customFields.${key}`] = new RegExp(val, 'i');
+        }
+      }
+    });
 
     // Sort setup
     let sort = {};
@@ -91,14 +125,14 @@ exports.getCustomers = async (req, res, next) => {
 // @access  Private
 exports.getCustomer = async (req, res, next) => {
   try {
-    const query = req.user.role === 'admin' ? { _id: req.params.id } : { _id: req.params.id, userId: req.user._id };
+    const query = { _id: req.params.id, workspaceId: req.workspaceId };
     const customer = await Customer.findOne(query);
     if (!customer) {
       return error(res, 'Customer not found', 404);
     }
 
     // Fetch last 10 orders
-    const orderQuery = req.user.role === 'admin' ? { customerId: customer._id } : { customerId: customer._id, userId: req.user._id };
+    const orderQuery = { customerId: customer._id, workspaceId: req.workspaceId };
     const orders = await Order.find(orderQuery)
       .sort({ orderedAt: -1 })
       .limit(10);
@@ -120,16 +154,17 @@ exports.createCustomer = async (req, res, next) => {
       return error(res, 'Name is required', 400);
     }
 
-    // Check email uniqueness if provided
+    // Check email uniqueness within the workspace if provided
     if (email) {
-      const existingCustomer = await Customer.findOne({ email: email.toLowerCase() });
+      const existingCustomer = await Customer.findOne({ email: email.toLowerCase(), workspaceId: req.workspaceId });
       if (existingCustomer) {
-        return error(res, 'A customer with this email already exists', 400);
+        return error(res, 'A customer with this email already exists in this workspace', 400);
       }
     }
 
     const customer = new Customer({
       userId: req.user._id,
+      workspaceId: req.workspaceId,
       name,
       email: email ? email.toLowerCase() : undefined,
       phone,
@@ -141,6 +176,16 @@ exports.createCustomer = async (req, res, next) => {
 
     await customer.save();
     clearUserCache(req.user._id);
+
+    logActivity({
+      userId: req.user._id,
+      workspaceId: req.workspaceId,
+      type: 'customer_created',
+      title: `Added customer: ${customer.name}`,
+      resourceType: 'customer',
+      resourceId: customer._id
+    });
+
     return success(res, customer, 'Customer created successfully', 201);
   } catch (err) {
     next(err);
@@ -154,17 +199,17 @@ exports.updateCustomer = async (req, res, next) => {
   try {
     const { name, email, phone, gender, city, tags } = req.body;
 
-    const query = req.user.role === 'admin' ? { _id: req.params.id } : { _id: req.params.id, userId: req.user._id };
+    const query = { _id: req.params.id, workspaceId: req.workspaceId };
     let customer = await Customer.findOne(query);
     if (!customer) {
       return error(res, 'Customer not found', 404);
     }
 
-    // Validate email uniqueness if changing email
+    // Validate email uniqueness within workspace if changing email
     if (email && email.toLowerCase() !== customer.email) {
-      const existingCustomer = await Customer.findOne({ email: email.toLowerCase() });
+      const existingCustomer = await Customer.findOne({ email: email.toLowerCase(), workspaceId: req.workspaceId });
       if (existingCustomer) {
-        return error(res, 'A customer with this email already exists', 400);
+        return error(res, 'A customer with this email already exists in this workspace', 400);
       }
       customer.email = email.toLowerCase();
     }
@@ -188,14 +233,14 @@ exports.updateCustomer = async (req, res, next) => {
 // @access  Private
 exports.deleteCustomer = async (req, res, next) => {
   try {
-    const query = req.user.role === 'admin' ? { _id: req.params.id } : { _id: req.params.id, userId: req.user._id };
+    const query = { _id: req.params.id, workspaceId: req.workspaceId };
     const customer = await Customer.findOne(query);
     if (!customer) {
       return error(res, 'Customer not found', 404);
     }
 
     // Cascade delete customer orders
-    const orderQuery = req.user.role === 'admin' ? { customerId: customer._id } : { customerId: customer._id, userId: req.user._id };
+    const orderQuery = { customerId: customer._id, workspaceId: req.workspaceId };
     await Order.deleteMany(orderQuery);
     await customer.deleteOne();
     clearUserCache(req.user._id);
@@ -205,52 +250,87 @@ exports.deleteCustomer = async (req, res, next) => {
   }
 };
 
-// @desc    Bulk import customers from CSV file
+// @desc    Bulk import customers from CSV/Excel/JSON file
 // @route   POST /api/customers/import
 // @access  Private
 exports.importCSV = async (req, res, next) => {
   try {
     if (!req.file) {
-      return error(res, 'Please upload a CSV file', 400);
+      return error(res, 'Please upload a file', 400);
     }
 
-    const customersData = await parseCustomersCSV(req.file.buffer);
-    if (customersData.length === 0) {
-      return error(res, 'No valid customers found in CSV file', 400);
+    const mapping = req.body.mapping ? JSON.parse(req.body.mapping) : null;
+    const { cleanedCustomers, headers, mapping: resolvedMapping } = await parseCustomersCSV(req.file.buffer, req.file.originalname, mapping);
+    if (cleanedCustomers.length === 0) {
+      return error(res, 'No valid customers found in file', 400);
     }
 
-    const prependedData = customersData.map(c => ({ ...c, userId: req.user._id }));
+    const prependedData = cleanedCustomers.map(c => ({
+      ...c,
+      userId: req.user._id,
+      workspaceId: req.workspaceId
+    }));
 
     let imported = 0;
     let skipped = 0;
     const errors = [];
 
-    // Let's run a bulk insert or loops. Bulk insertMany with ordered: false lets us insert
-    // duplicates and throw them into errors.
     try {
       const result = await Customer.insertMany(prependedData, { ordered: false });
       imported = result.length;
     } catch (bulkErr) {
-      // insertMany ordered: false will return the successfully inserted docs in bulkErr.insertedDocs
       imported = bulkErr.insertedDocs ? bulkErr.insertedDocs.length : 0;
       
-      // Parse write errors
       if (bulkErr.writeErrors) {
         skipped = bulkErr.writeErrors.length;
         bulkErr.writeErrors.forEach(err => {
           errors.push({
             row: err.index + 1,
             email: prependedData[err.index].email,
-            reason: err.code === 11000 ? 'Email address already exists' : err.errmsg
+            reason: err.code === 11000 ? 'Email address already exists in workspace' : err.errmsg
+          });
+        });
+      } else if (bulkErr.errors) {
+        skipped = prependedData.length - imported;
+        Object.keys(bulkErr.errors).forEach((key, idx) => {
+          errors.push({
+            row: idx + 1,
+            reason: bulkErr.errors[key].message
           });
         });
       } else {
+        skipped = prependedData.length - imported;
         errors.push({ reason: bulkErr.message });
       }
     }
 
-    // Clear the cache since new data has been imported
+    const activeFields = headers.map(header => {
+      const target = resolvedMapping ? resolvedMapping[header] : null;
+      if (target && target !== 'custom') {
+        return target;
+      }
+      return header.trim();
+    });
+
+    // Save/update uploaded fields list on Workspace
+    const Workspace = require('../models/Workspace');
+    const uploadedFields = Array.from(new Set(activeFields.map(normalizeHeader)));
+    await Workspace.findByIdAndUpdate(req.workspaceId, {
+      $addToSet: { uploadedFields: { $each: uploadedFields } }
+    });
+
     clearUserCache(req.user._id);
+
+    const fileExt = req.file.originalname.split('.').pop().toUpperCase();
+    logActivity({
+      userId: req.user._id,
+      workspaceId: req.workspaceId,
+      type: 'customers_imported',
+      title: `Imported ${imported} customers via ${fileExt}`,
+      description: `${skipped} records failed or skipped`,
+      resourceType: 'customer',
+      meta: { successCount: imported, failedCount: skipped }
+    });
 
     return success(res, {
       imported,
@@ -262,12 +342,38 @@ exports.importCSV = async (req, res, next) => {
   }
 };
 
+// @desc    Parse uploaded file and return a preview
+// @route   POST /api/customers/import-preview
+// @access  Private
+exports.importPreview = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return error(res, 'Please upload a file', 400);
+    }
+
+    const { cleanedCustomers, headers, mapping } = await parseCustomersCSV(req.file.buffer, req.file.originalname);
+    if (cleanedCustomers.length === 0) {
+      return error(res, 'No valid customers found in file', 400);
+    }
+
+    const preview = cleanedCustomers.slice(0, 2);
+
+    return success(res, {
+      preview,
+      headers,
+      mapping
+    }, 'File parsed successfully for preview');
+  } catch (err) {
+    next(err);
+  }
+};
+
 // @desc    Get unique tags, cities, and custom field keys for metadata
 // @route   GET /api/customers/metadata
 // @access  Private
 exports.getMetadata = async (req, res, next) => {
   try {
-    const query = req.user.role === 'admin' ? {} : { userId: req.user._id };
+    const query = { workspaceId: req.workspaceId };
     
     // Unique tags
     const allTags = await Customer.distinct('tags', query);
@@ -275,15 +381,22 @@ exports.getMetadata = async (req, res, next) => {
     // Unique cities
     const allCities = await Customer.distinct('city', query);
     
-    // Unique custom field keys from sample
-    const sampleCustomers = await Customer.find({ ...query, customFields: { $exists: true } }).limit(100).select('customFields');
-    const customFieldKeys = Array.from(new Set(sampleCustomers.flatMap(c => c.customFields ? Object.keys(c.customFields) : [])));
+    const Workspace = require('../models/Workspace');
+    const workspace = await Workspace.findById(req.workspaceId);
+    
+    const uploadedFields = workspace?.uploadedFields && workspace.uploadedFields.length > 0
+      ? workspace.uploadedFields
+      : []; // No fallback for empty workspace
+
+    const standardSchemaFields = ['name', 'email', 'phone', 'city', 'gender', 'tags', 'totalSpend', 'orderCount', 'lastOrderDate', 'avgOrderValue'];
+    const customFieldKeys = uploadedFields.filter(f => !standardSchemaFields.includes(f));
 
     return res.status(200).json({
       success: true,
       data: {
         tags: allTags.filter(Boolean),
         cities: allCities.filter(Boolean),
+        uploadedFields,
         customFieldKeys
       }
     });

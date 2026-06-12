@@ -4,21 +4,22 @@ const CommunicationLog = require('../src/models/CommunicationLog');
 const CampaignStats = require('../src/models/CampaignStats');
 const Customer = require('../src/models/Customer');
 
-const seedCampaigns = async (customers, userId) => {
+const seedCampaigns = async (customers, userId, workspaceId) => {
   console.log('Seeding campaigns collection...');
   await Segment.deleteMany({ createdBy: 'manual' });
   await Campaign.deleteMany({});
   await CommunicationLog.deleteMany({});
   await CampaignStats.deleteMany({});
-
+ 
   // Fetch subsets of customers for segment definitions
   const vipCustomers = customers.filter(c => c.tags.includes('vip'));
   const regularCustomers = customers.filter(c => c.tags.includes('active') && !c.tags.includes('vip')).slice(0, 40);
   const churnRiskCustomers = customers.filter(c => c.tags.includes('churn-risk')).slice(0, 30);
-
+ 
   // 1. Create Segments
   const segment1 = new Segment({
     userId,
+    workspaceId,
     name: 'Seeded VIP Shoppers',
     description: 'High value customers with over 5 orders',
     rules: { logic: 'AND', conditions: [{ field: 'totalSpend', operator: 'gte', value: 15000 }] },
@@ -27,9 +28,10 @@ const seedCampaigns = async (customers, userId) => {
     createdBy: 'manual'
   });
   await segment1.save();
-
+ 
   const segment2 = new Segment({
     userId,
+    workspaceId,
     name: 'Active Shoppers Segment',
     description: 'Regular active purchasers in the database',
     rules: { logic: 'AND', conditions: [{ field: 'orderCount', operator: 'gte', value: 3 }] },
@@ -38,9 +40,10 @@ const seedCampaigns = async (customers, userId) => {
     createdBy: 'manual'
   });
   await segment2.save();
-
+ 
   const segment3 = new Segment({
     userId,
+    workspaceId,
     name: 'At-Risk Cohort',
     description: 'VIPs at risk of churn',
     rules: { logic: 'AND', conditions: [{ field: 'daysSinceLastOrder', operator: 'gte', value: 60 }] },
@@ -49,10 +52,11 @@ const seedCampaigns = async (customers, userId) => {
     createdBy: 'manual'
   });
   await segment3.save();
-
+ 
   // 2. Create Campaigns
   const campaign1 = new Campaign({
     userId,
+    workspaceId,
     name: 'Summer Glow Welcomer',
     segmentId: segment1._id,
     messageTemplate: 'Hi {{firstName}}, we have curated early-access rose gold highlights for our VIPs in {{city}}! Get yours before public launch.',
@@ -64,9 +68,10 @@ const seedCampaigns = async (customers, userId) => {
     aiContext: 'VIP targeted drop'
   });
   await campaign1.save();
-
+ 
   const campaign2 = new Campaign({
     userId,
+    workspaceId,
     name: 'VIP Loyalty Catalog Drop',
     segmentId: segment2._id,
     messageTemplate: 'Hi {{name}}, view our new Lumière Premium Kurta catalog! You have purchased {{orderCount}} items with us, enjoy 15% off.',
@@ -77,9 +82,10 @@ const seedCampaigns = async (customers, userId) => {
     createdBy: 'manual'
   });
   await campaign2.save();
-
+ 
   const campaign3 = new Campaign({
     userId,
+    workspaceId,
     name: 'At-Risk VIP Re-Engagement',
     segmentId: segment3._id,
     messageTemplate: 'Hi {{firstName}}, we miss you! Use code MISSYOU for 25% off on our Glow Serum.',
@@ -91,23 +97,23 @@ const seedCampaigns = async (customers, userId) => {
     aiContext: 'Churn recovery discount promotion'
   });
   await campaign3.save();
-
+ 
   // 3. Generate logs and stats helper
   const createLogsAndStats = async (campaign, segmentCustomers, deliveryProb, openProb, clickProb, failProb) => {
     const logs = [];
     let queued = 0, sent = 0, delivered = 0, failed = 0, opened = 0, read = 0, clicked = 0;
-
+ 
     segmentCustomers.forEach((cust) => {
       const personalizedMessage = campaign.messageTemplate
         .replace('{{name}}', cust.name)
         .replace('{{firstName}}', cust.name.split(' ')[0])
         .replace('{{city}}', cust.city || 'Mumbai')
         .replace('{{orderCount}}', cust.orderCount);
-
+ 
       const rand = Math.random();
       let status = 'sent';
       const history = [{ status: 'queued', timestamp: campaign.startedAt }];
-
+ 
       if (rand < failProb) {
         status = 'failed';
         failed++;
@@ -131,7 +137,7 @@ const seedCampaigns = async (customers, userId) => {
               read++;
               history.push({ status: 'read', timestamp: new Date(campaign.startedAt.getTime() + 120000) });
             }
-
+ 
             if (Math.random() < clickProb) {
               status = 'clicked';
               clicked++;
@@ -142,9 +148,10 @@ const seedCampaigns = async (customers, userId) => {
           status = 'sent'; // stayed at sent
         }
       }
-
+ 
       logs.push({
         userId: campaign.userId,
+        workspaceId,
         campaignId: campaign._id,
         customerId: cust._id,
         personalizedMessage,
@@ -157,12 +164,13 @@ const seedCampaigns = async (customers, userId) => {
         updatedAt: campaign.completedAt
       });
     });
-
+ 
     await CommunicationLog.insertMany(logs);
-
+ 
     const total = segmentCustomers.length;
     const statsObj = new CampaignStats({
       userId: campaign.userId,
+      workspaceId,
       campaignId: campaign._id,
       total,
       queued,
@@ -179,12 +187,12 @@ const seedCampaigns = async (customers, userId) => {
     });
     await statsObj.save();
   };
-
+ 
   // Run generation for the 3 campaigns
   await createLogsAndStats(campaign1, vipCustomers, 0.95, 0.85, 0.45, 0.02);
   await createLogsAndStats(campaign2, regularCustomers, 0.90, 0.60, 0.20, 0.05);
   await createLogsAndStats(campaign3, churnRiskCustomers, 0.88, 0.70, 0.35, 0.08);
-
+ 
   console.log('Campaigns seeding complete.');
 };
 

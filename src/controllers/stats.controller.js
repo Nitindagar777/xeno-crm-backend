@@ -8,14 +8,17 @@ const { success } = require('../utils/responseHelper');
 // @access  Private
 exports.getOverview = async (req, res, next) => {
   try {
-    const totalCustomers = await Customer.countDocuments(req.user.role === 'admin' ? {} : { userId: req.user._id });
-    const totalCampaigns = await Campaign.countDocuments(req.user.role === 'admin' ? {} : { userId: req.user._id });
+    const totalCustomers = await Customer.countDocuments({ workspaceId: req.workspaceId });
+    const totalCampaigns = await Campaign.countDocuments({ workspaceId: req.workspaceId });
 
-    // Calculate averages across CampaignStats scoped to active user
-    const matchQuery = req.user.role === 'admin' ? {} : { userId: req.user._id };
+    // Fetch workspace campaigns first to scope statistics averages
+    const workspaceCampaigns = await Campaign.find({ workspaceId: req.workspaceId }).select('_id');
+    const campaignIds = workspaceCampaigns.map(c => c._id);
+
+    // Calculate averages across CampaignStats scoped to active workspace campaigns
     const avgStats = await CampaignStats.aggregate([
       {
-        $match: matchQuery
+        $match: { campaignId: { $in: campaignIds } }
       },
       {
         $group: {
@@ -29,16 +32,14 @@ exports.getOverview = async (req, res, next) => {
 
     const statsSummary = avgStats[0] || { avgDelivery: 0, avgOpen: 0, avgClick: 0 };
 
-    // Fetch last 7 campaigns with stats scoped to active user
-    const query = req.user.role === 'admin' ? {} : { userId: req.user._id };
-    const recentCampaignsRaw = await Campaign.find(query)
+    // Fetch last 7 campaigns with stats scoped to active workspace
+    const recentCampaignsRaw = await Campaign.find({ workspaceId: req.workspaceId })
       .populate('segmentId', 'name audienceCount')
       .sort({ createdAt: -1 })
       .limit(7);
 
     const recentCampaigns = await Promise.all(recentCampaignsRaw.map(async (c) => {
-      const statsQuery = req.user.role === 'admin' ? { campaignId: c._id } : { campaignId: c._id, userId: req.user._id };
-      const stats = await CampaignStats.findOne(statsQuery);
+      const stats = await CampaignStats.findOne({ campaignId: c._id });
       return {
         ...c.toObject(),
         stats: stats || null
