@@ -21,5 +21,6 @@ router.post('/:id/send', campaignController.sendCampaign);
 router.get('/:id/stats', campaignController.getCampaignStats);
 router.get('/:id/logs', campaignController.getCampaignLogs);
 router.get('/:id/analysis', campaignController.getCampaignAnalysis);
+router.post('/logs/:logId/convert', campaignController.markLogAsConverted);
 
 module.exports = router;

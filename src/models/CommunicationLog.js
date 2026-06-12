@@ -39,7 +39,7 @@ const CommunicationLogSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['queued', 'sent', 'delivered', 'failed', 'opened', 'read', 'clicked'],
+    enum: ['queued', 'sent', 'delivered', 'failed', 'opened', 'read', 'clicked', 'converted'],
     default: 'queued'
   },
   statusHistory: [{

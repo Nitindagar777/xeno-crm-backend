@@ -585,3 +585,42 @@ Provide specific recommendations for improvement.`;
     next(err);
   }
 };
+
+// @desc    Mark a communication log as converted
+// @route   POST /api/campaigns/logs/:logId/convert
+// @access  Private
+exports.markLogAsConverted = async (req, res, next) => {
+  try {
+    const { logId } = req.params;
+    const { conversionValue } = req.body;
+    
+    const log = await CommunicationLog.findOne({ _id: logId, workspaceId: req.workspaceId });
+    if (!log) {
+      return error(res, 'Communication log not found', 404);
+    }
+    
+    if (log.converted) {
+      return error(res, 'This communication is already marked as converted', 400);
+    }
+    
+    // Update log
+    log.converted = true;
+    log.convertedAt = new Date();
+    log.conversionValue = Number(conversionValue) || 100;
+    log.status = 'converted';
+    log.statusHistory.push({
+      status: 'converted',
+      timestamp: new Date(),
+      meta: { conversionValue: log.conversionValue }
+    });
+    
+    await log.save();
+    
+    // Recalculate campaign statistics
+    const stats = await updateCampaignStats(log.campaignId);
+    
+    return success(res, { log, stats }, 'Communication marked as converted successfully');
+  } catch (err) {
+    next(err);
+  }
+};
